@@ -27,13 +27,22 @@ class BubbleOverlay(private val ctx: Context) {
         PixelFormat.TRANSLUCENT
     )
 
+    // The window manager is the source of truth, not our own flag: removeView is asynchronous
+    // and a failed addView can leave the view attached while `shown` says otherwise.
+    private fun attached() = view.parent != null || view.isAttachedToWindow
+
     fun show() {
-        if (shown && view.isAttachedToWindow) return
-        shown = false
+        if (attached()) {
+            shown = true
+            return
+        }
         view.refreshTemplate()
         try {
             wm?.addView(view, params(touchable))
             shown = true
+        } catch (e: IllegalStateException) {
+            // "already added": it is on screen, which is all we wanted.
+            shown = attached()
         } catch (e: Exception) {
             Log.w("DG", "overlay addView failed (a11yType=$useA11yType)", e)
             if (useA11yType) {
@@ -44,9 +53,13 @@ class BubbleOverlay(private val ctx: Context) {
     }
 
     fun hide() {
-        if (!shown) return
+        if (!attached()) {
+            shown = false
+            return
+        }
         try {
-            wm?.removeView(view)
+            // Immediate, so a show() right after cannot collide with a pending removal.
+            wm?.removeViewImmediate(view)
         } catch (_: Exception) {
             // Window already gone.
         }
