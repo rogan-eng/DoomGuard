@@ -10,7 +10,10 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
+import com.poc.doomguard.data.Categorizer
+import com.poc.doomguard.data.CategoryTally
 import com.poc.doomguard.engine.Checkpoint
 import com.poc.doomguard.engine.PressureEngine
 import com.poc.doomguard.overlay.BubbleOverlay
@@ -22,10 +25,14 @@ import com.poc.doomguard.ui.QuoteBreakActivity
 //   adb shell am broadcast -a com.poc.doomguard.TEST_BREATHE -p com.poc.doomguard
 class ScrollSensorService : AccessibilityService() {
     private lateinit var bubble: BubbleOverlay
+    // True while Instagram is the foreground app; the overlay is only shown while this holds.
     private var igForeground = false
-    private var scrollCount = 0
-    private var reelCount = 0
+    private var scrollCount = 0 // raw scroll events, log-only
+    private var reelCount = 0   // reels counted since the service connected, log-only
+    // Reels ViewPager index last seen; -1 = unknown, so the first event after (re)entering IG
+    // only seeds it and is not counted as a swipe.
     private var lastIndex = -1
+    // uptimeMillis of the last checkpoint launch; debounces repeated launches.
     private var lastCheckpointAt = -10_000L
     // The break activity takes a moment to appear; until it does, treat the break as showing.
     private var breakGraceUntil = 0L
@@ -42,6 +49,7 @@ class ScrollSensorService : AccessibilityService() {
         }
     }
 
+    // True while the break screen is up or about to be (the grace window covers its launch delay).
     private fun breakShowing() =
         QuoteBreakActivity.visible || SystemClock.uptimeMillis() < breakGraceUntil
 
@@ -123,6 +131,7 @@ class ScrollSensorService : AccessibilityService() {
                             PressureEngine.onReel()
                             reelCount++
                             Log.w(TAG, "REEL #$reelCount index=${e.fromIndex}")
+                            scheduleNodeDump(reelCount)
                             val snap = PressureEngine.snap.value
                             if (::bubble.isInitialized) bubble.render(snap)
                             if (snap.count >= PressureEngine.threshold + CHECKPOINT_EXTRA) launchCheckpoint()
@@ -150,6 +159,8 @@ class ScrollSensorService : AccessibilityService() {
         breakGraceUntil = now + 2000
         igForeground = false
         lastIndex = -1
+        pendingDump?.let { handler.removeCallbacks(it) }
+        pendingDump = null
         handler.removeCallbacks(showWhenBreakEnds)
         if (::bubble.isInitialized) bubble.hide()
         Log.w(TAG, "CHECKPOINT: count=${PressureEngine.snap.value.count} -> QuoteBreakActivity")
@@ -163,9 +174,87 @@ class ScrollSensorService : AccessibilityService() {
         }
     }
 
+    // ~600ms after a reel is counted (let the new reel's text settle), read the reel's creator,
+    // audio and caption and categorize them. A newer reel replaces the pending dump (that reel
+    // simply gets no category); a checkpoint cancels it so a late result cannot leak into the
+    // next session's tally.
+    private var pendingDump: Runnable? = null
+
+    private fun scheduleNodeDump(reel: Int) {
+        pendingDump?.let { handler.removeCallbacks(it) }
+        val r = Runnable { pendingDump = null; dumpNodes(reel) }
+        pendingDump = r
+        handler.postDelayed(r, 600)
+    }
+
+    // Walks the active window once (capped at MAX_NODES) and picks out three strings by shape,
+    // since Instagram's reel UI has no stable ids except the author:
+    //   user    = text of the clips_author_username node
+    //   audio   = id-less Button whose description contains " · " ("Artist · Track")
+    //   caption = first other id-less node with a description and no text, minus button chrome
+    private fun dumpNodes(reel: Int) {
+        var user: String? = null
+        var audio: String? = null
+        var caption: String? = null
+        try {
+            val root = rootInActiveWindow ?: return
+            var visited = 0
+            fun walk(n: AccessibilityNodeInfo) {
+                if (visited++ >= MAX_NODES) return
+                val id = n.viewIdResourceName
+                val text = n.text?.toString()?.take(300)
+                val desc = n.contentDescription?.toString()?.take(300)
+                if (DUMP_NODES && (!text.isNullOrBlank() || !desc.isNullOrBlank())) {
+                    Log.w(TAG, "NODES reel#$reel id=$id cls=${n.className} text=$text desc=$desc")
+                }
+                // Home-feed nodes behind the reel: skip the whole subtree.
+                if (desc != null && (desc.contains("reels tray container", true) || desc.contains("'s story,", true))) return
+                if (id == ID_AUTHOR) {
+                    if (user == null && !text.isNullOrBlank()) user = text
+                } else if (id == null && !desc.isNullOrBlank()) {
+                    if (audio == null && n.className?.toString()?.endsWith("Button") == true && desc.contains(" · ")) {
+                        audio = desc
+                    } else if (caption == null && text.isNullOrBlank() && !isChrome(desc)) {
+                        caption = desc
+                    }
+                }
+                for (i in 0 until n.childCount) {
+                    val c = n.getChild(i) ?: continue
+                    try { walk(c) } finally { @Suppress("DEPRECATION") c.recycle() }
+                }
+            }
+            try { walk(root) } finally { @Suppress("DEPRECATION") root.recycle() }
+        } catch (t: Throwable) {
+            Log.e(TAG, "NODES reel#$reel walk failed", t)
+        }
+        try {
+            Log.w(TAG, "REELTEXT reel#$reel user=$user audio=$audio caption=${caption?.take(120)}")
+            val texts = listOfNotNull(user, audio, caption)
+            val category = Categorizer.categorize(texts)
+            // count resets to 0 after a checkpoint: the first reel of a session starts a fresh tally.
+            if (PressureEngine.snap.value.count <= 1f) CategoryTally.clear()
+            CategoryTally.add(category)
+            Log.w(TAG, "CATEGORY reel#$reel -> $category tally=${CategoryTally.line()}")
+            if (::bubble.isInitialized) bubble.invalidateTally()
+        } catch (t: Throwable) {
+            Log.e(TAG, "CATEGORY reel#$reel failed", t)
+        }
+    }
+
+    // True for button labels and engagement counters, which also show up as id-less nodes with a
+    // description and would otherwise be mistaken for the caption.
+    private fun isChrome(desc: String): Boolean {
+        if (desc.startsWith("Reel by", true)) return true
+        if (CHROME_CONTAINS.any { desc.contains(it, true) }) return true
+        // Short labels only, so a caption that merely starts with "Like" or "Save" survives.
+        return desc.length <= 24 && CHROME_PREFIX.any { desc.startsWith(it, true) }
+    }
+
+    // Required by AccessibilityService; there is no feedback to interrupt.
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        pendingDump?.let { handler.removeCallbacks(it) }
         handler.removeCallbacks(showWhenBreakEnds)
         try { unregisterReceiver(testReceiver) } catch (_: Throwable) {}
         if (::bubble.isInitialized) bubble.hide()
@@ -176,6 +265,14 @@ class ScrollSensorService : AccessibilityService() {
         const val TAG = "DG"
         const val IG = "com.instagram.android"
         const val CHECKPOINT_EXTRA = Checkpoint.EXTRA
+        const val MAX_NODES = 400 // bounds the tree walk so a deep hierarchy cannot stall the main thread
+        const val DUMP_NODES = false // flip on to log every text/desc node when re-tuning the rules below
+        const val ID_AUTHOR = "com.instagram.android:id/clips_author_username"
+        val CHROME_CONTAINS = listOf("Like number", "Comment number", "Reposted", "Reshare", "Save number", "Profile picture of")
+        val CHROME_PREFIX = listOf(
+            "Like", "Comment", "Repost", "Share", "Save", "More", "Follow", "Back", "Add comment",
+            "Instagram Home Feed", "Audio", "Send", "Search", "Camera", "Reels", "Messages"
+        )
         const val ACTION_TEST = "com.poc.doomguard.TEST_BREATHE"
     }
 }

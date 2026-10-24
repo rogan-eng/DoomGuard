@@ -6,10 +6,14 @@ import android.util.Log
 import android.view.WindowManager
 import com.poc.doomguard.engine.PressureEngine
 
+/**
+ * Owns the full-screen overlay window that hosts [BubbleView]. The window is not touchable by
+ * default so Instagram keeps receiving swipes; [setTouchable] flips that for the break.
+ */
 class BubbleOverlay(private val ctx: Context) {
     private val wm: WindowManager? = ctx.getSystemService(WindowManager::class.java)
     private val view = BubbleView(ctx)
-    private var shown = false
+    private var shown = false // our belief only; attached() is the real answer
     private var touchable = false
 
     // Accessibility overlays need no "Display over other apps" grant and OEM overlay
@@ -31,6 +35,7 @@ class BubbleOverlay(private val ctx: Context) {
     // and a failed addView can leave the view attached while `shown` says otherwise.
     private fun attached() = view.parent != null || view.isAttachedToWindow
 
+    /** Adds the overlay if it is not already attached. Falls back to the app overlay type once. */
     fun show() {
         if (attached()) {
             shown = true
@@ -52,6 +57,7 @@ class BubbleOverlay(private val ctx: Context) {
         }
     }
 
+    /** Removes the overlay if attached; safe to call repeatedly. */
     fun hide() {
         if (!attached()) {
             shown = false
@@ -66,6 +72,7 @@ class BubbleOverlay(private val ctx: Context) {
         shown = false
     }
 
+    /** Switches between pass-through (false) and touch-blocking (true) without re-adding the view. */
     fun setTouchable(t: Boolean) {
         touchable = t
         if (!shown) return
@@ -76,7 +83,13 @@ class BubbleOverlay(private val ctx: Context) {
         }
     }
 
+    /** Pushes a new pressure snapshot to the view, which animates toward it. */
     fun render(s: PressureEngine.Snapshot) {
         view.render(s)
+    }
+
+    /** Redraws the per-category tally line only (no count animation restart). */
+    fun invalidateTally() {
+        view.refreshTally()
     }
 }
