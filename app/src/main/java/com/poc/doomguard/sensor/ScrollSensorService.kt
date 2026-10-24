@@ -5,12 +5,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.poc.doomguard.engine.PressureEngine
 import com.poc.doomguard.overlay.BubbleOverlay
 import com.poc.doomguard.ui.BreatheActivity
+import com.poc.doomguard.ui.QuoteBreakActivity
 
 // C0 SPIKE (throwaway). Logs under tag "DG" so the reel rule (G0) can be chosen from real
 // Instagram events, and exposes a broadcast to test background startActivity (G0b):
@@ -21,6 +23,7 @@ class ScrollSensorService : AccessibilityService() {
     private var scrollCount = 0
     private var reelCount = 0
     private var lastIndex = -1
+    private var lastCheckpointAt = -10_000L
 
     private val testReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -38,6 +41,10 @@ class ScrollSensorService : AccessibilityService() {
 
     override fun onServiceConnected() {
         Log.w(TAG, "service connected")
+        // MainActivity only restores the saved threshold when it is opened; do it here too.
+        PressureEngine.threshold = getSharedPreferences("doomguard_prefs", Context.MODE_PRIVATE)
+            .getInt("threshold", PressureEngine.threshold)
+        Log.w(TAG, "threshold=${PressureEngine.threshold} checkpoint at ${PressureEngine.threshold + CHECKPOINT_EXTRA}")
         bubble = BubbleOverlay(this)
         ContextCompat.registerReceiver(
             this, testReceiver, IntentFilter(ACTION_TEST), ContextCompat.RECEIVER_EXPORTED
@@ -60,7 +67,7 @@ class ScrollSensorService : AccessibilityService() {
                 if (!ig) lastIndex = -1
                 if (ig) {
                     bubble.show()
-                    bubble.render(PressureEngine.Snapshot(0f, 0f, PressureEngine.State.CALM))
+                    bubble.render(PressureEngine.snap.value) // shows the reset count after a checkpoint
                 } else {
                     bubble.hide()
                 }
@@ -77,7 +84,9 @@ class ScrollSensorService : AccessibilityService() {
                             PressureEngine.onReel()
                             reelCount++
                             Log.w(TAG, "REEL #$reelCount index=${e.fromIndex}")
-                            if (::bubble.isInitialized) bubble.render(PressureEngine.snap.value)
+                            val snap = PressureEngine.snap.value
+                            if (::bubble.isInitialized) bubble.render(snap)
+                            if (snap.count >= PressureEngine.threshold + CHECKPOINT_EXTRA) launchCheckpoint()
                         }
                     }
                 }
@@ -92,6 +101,23 @@ class ScrollSensorService : AccessibilityService() {
         }
     }
 
+    // Checkpoint: threshold + 10 reels -> 10s blocking screen with a quote, then count resets.
+    // singleTask brings an existing instance forward, so relaunching while it shows is harmless.
+    private fun launchCheckpoint() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastCheckpointAt < 3000) return
+        lastCheckpointAt = now
+        Log.w(TAG, "CHECKPOINT: count=${PressureEngine.snap.value.count} -> QuoteBreakActivity")
+        try {
+            startActivity(
+                Intent(this, QuoteBreakActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "CHECKPOINT: startActivity FAILED", t)
+        }
+    }
+
     override fun onInterrupt() {}
 
     override fun onDestroy() {
@@ -103,6 +129,7 @@ class ScrollSensorService : AccessibilityService() {
     private companion object {
         const val TAG = "DG"
         const val IG = "com.instagram.android"
+        const val CHECKPOINT_EXTRA = 10
         const val ACTION_TEST = "com.poc.doomguard.TEST_BREATHE"
     }
 }
