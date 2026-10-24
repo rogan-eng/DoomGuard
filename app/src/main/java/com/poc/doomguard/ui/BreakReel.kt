@@ -63,6 +63,19 @@ fun BreakReel(s: BreakState, onDone: () -> Unit) {
                     color = text,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
+                s.summary?.let { sum ->
+                    Text(
+                        text = sum.line,
+                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                        color = text
+                    )
+                    Text(
+                        text = "${sum.totalLabel} · ${sum.sourceLabel}",
+                        style = TextStyle(fontSize = 13.sp),
+                        color = text.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+                    )
+                }
                 FrameStrip(
                     total = s.total,
                     used = s.total * s.left,

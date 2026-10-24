@@ -12,7 +12,6 @@ import android.graphics.Typeface
 import android.view.MotionEvent
 import android.view.View
 import android.view.animation.DecelerateInterpolator
-import com.poc.doomguard.data.CategoryTally
 import com.poc.doomguard.data.Template
 import com.poc.doomguard.data.TemplateStore
 import com.poc.doomguard.engine.Checkpoint
@@ -46,7 +45,6 @@ class BubbleView(ctx: Context) : View(ctx) {
     private var countText = "0"
     private var depthText = "0 m"
     private var leftText = ""
-    private var tallyText = ""
     private var framesLeft = Checkpoint.total(PressureEngine.threshold)
 
     // Reel
@@ -104,15 +102,6 @@ class BubbleView(ctx: Context) : View(ctx) {
     }
     private val gaugePaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    // Tally line: white text with a dark shadow reads over both dark and light reels.
-    private val tallyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textSize = 12f * density * fontScale
-        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setShadowLayer(3f * density, 0f, 1f * density, Color.argb(220, 0, 0, 0))
-    }
-    private val tallyChip = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(110, 0, 0, 0) }
-
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 450L
         interpolator = DecelerateInterpolator()
@@ -129,14 +118,7 @@ class BubbleView(ctx: Context) : View(ctx) {
         invalidate()
     }
 
-    /** Rebuilds the tally string (outside onDraw) and redraws. */
-    fun refreshTally() {
-        tallyText = CategoryTally.line()
-        invalidate()
-    }
-
     fun render(s: PressureEngine.Snapshot) {
-        tallyText = CategoryTally.line()
         val threshold = PressureEngine.threshold
         val total = Checkpoint.total(threshold)
         val c = s.count.roundToInt()
@@ -177,28 +159,6 @@ class BubbleView(ctx: Context) : View(ctx) {
         }
     }
 
-    // Right-aligned line ending at the right inset, with a soft dark chip behind it.
-    // Fits within 80% of the width; shrinks the text if the line is too long.
-    private fun drawTally(canvas: Canvas, w: Float, baseline: Float) {
-        if (tallyText.isEmpty()) return
-        val base = 12f * density * fontScale
-        tallyPaint.textSize = base
-        val maxW = w * 0.8f
-        val tw = tallyPaint.measureText(tallyText)
-        if (tw > maxW) tallyPaint.textSize = base * maxW / tw
-        val right = w - inset
-        val tw2 = tallyPaint.measureText(tallyText)
-        val pad = 6f * density
-        val fm = tallyPaint.fontMetrics
-        canvas.drawRoundRect(
-            right - tw2 - pad, baseline + fm.ascent - pad / 2f,
-            right + pad, baseline + fm.descent + pad / 2f,
-            8f * density, 8f * density, tallyChip
-        )
-        tallyPaint.textAlign = Paint.Align.RIGHT
-        canvas.drawText(tallyText, right, baseline, tallyPaint)
-    }
-
     private fun drawBubble(canvas: Canvas, w: Float, h: Float) {
         val p = cur[P]
         val maxRadius = hypot(w, h) / 2f
@@ -234,9 +194,6 @@ class BubbleView(ctx: Context) : View(ctx) {
         bubbleText.textSize = (22f + 22f * p) * density * fontScale
         val baseline = cy - (bubbleText.ascent() + bubbleText.descent()) / 2f
         canvas.drawText(countText, cx, baseline, bubbleText)
-
-        // Under the parked orb; at high pressure the orb fills the screen, so sit above the nav bar.
-        drawTally(canvas, w, if (p < 0.05f) parkY + minRadius * 1.22f + inset else h - 3f * inset)
     }
 
     private fun drawReel(canvas: Canvas, w: Float, h: Float) {
@@ -259,10 +216,6 @@ class BubbleView(ctx: Context) : View(ctx) {
             spinDeg = cur[SPIN],
             framesLeft = framesLeft
         )
-        // Below the corner reel; clear of the top letterbox bar's sprockets only when bar is thin,
-        // so drop below the bar if it is taller.
-        val reelBottom = statusBarH + inset + reelR * 2f * 1.07f
-        drawTally(canvas, w, max(reelBottom + 16f * density, h * MAX_BAR * cur[BARS] + 24f * density))
     }
 
     // Sprocket holes along both bars. They travel with the spin, so each reel you scroll
@@ -307,9 +260,6 @@ class BubbleView(ctx: Context) : View(ctx) {
         canvas.drawRoundRect(gx, gt, gx + gw, gt + gh, cr, cr, gaugePaint)
         gaugePaint.color = if (danger) RED_DEPTH else TEAL
         canvas.drawRoundRect(gx, gt, gx + gw, gt + max(gw, gh * used), cr, cr, gaugePaint)
-
-        // Below the dive panel; the gauge hugs the screen edge (7dp) so the chip stays left of it.
-        drawTally(canvas, w - 8f * density, y + bh + 24f * density)
     }
 
     // Swallow touches so the overlay never leaks a half-handled gesture; the window flag already

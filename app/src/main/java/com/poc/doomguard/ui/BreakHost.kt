@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -20,6 +21,9 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.poc.doomguard.data.Quotes
+import com.poc.doomguard.data.SessionSummaryStore
+import com.poc.doomguard.data.SummaryDisplay
+import com.poc.doomguard.data.SummaryFormat
 import com.poc.doomguard.engine.Checkpoint
 import com.poc.doomguard.engine.PressureEngine
 
@@ -35,7 +39,9 @@ class BreakState(
     val reelsRun: Int,
     /** Frames in a full run: threshold + 10. */
     val total: Int,
-    val quote: String
+    val quote: String,
+    /** Category breakdown of the run; null until there is one (or when nothing was recorded). */
+    val summary: SummaryDisplay? = null
 ) {
     /** Fraction of the break still to run, smooth within each second. */
     val left: Float
@@ -102,5 +108,9 @@ fun BreakHost(onDone: () -> Unit, content: @Composable (BreakState, () -> Unit) 
 
     BackHandler(enabled = true) { }
 
-    content(BreakState(remaining, sweep.value, finished, reelsRun, total, quote), onDone)
+    // Keyword counts arrive at once; a Gemini result (if enabled) replaces them while the break runs.
+    val summaryState by SessionSummaryStore.state.collectAsState()
+    val summary = SummaryFormat.display(summaryState)
+
+    content(BreakState(remaining, sweep.value, finished, reelsRun, total, quote, summary), onDone)
 }

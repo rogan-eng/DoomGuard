@@ -1,34 +1,77 @@
 package com.poc.doomguard.data
 
-// SPIKE: crude keyword categorizer for reel text (creator, audio, caption). '#tags' are split into
-// plain tokens; a few Tamil/Hindi-romanised words are included.
-// Pure Kotlin. Highest keyword hit count wins; ties go to the earlier category in the map.
+import android.content.Context
+import org.json.JSONObject
+
+// Keyword fallback for reel text (creator, audio, caption), used when Gemini is off or fails.
+// Keywords live in assets/categories.json. Latin keywords match whole tokens (so "ai" doesn't hit
+// "said"); keywords in other scripts (Tamil, Devanagari) match as substrings because those languages
+// attach suffixes (a trailing virama is dropped so stems match inflections). Highest hit count wins, ties go to the earlier category in [PRIORITY].
 object Categorizer {
     const val OTHER = "other"
+    const val ASSET = "categories.json"
+    /** Tie-break order; "other" is never matched, only returned. */
+    val PRIORITY = listOf("sports", "entertainment", "education", "lifestyle")
 
-    private val keywords: Map<String, List<String>> = linkedMapOf(
-        "comedy" to listOf("comedy", "funny", "meme", "memes", "joke", "jokes", "lol", "lmao", "humor", "humour", "prank", "skit", "relatable", "standup", "roast", "vadivelu", "goundamani", "santhanam", "brahmanandam", "trolls", "troll"),
-        "fitness" to listOf("fitness", "workout", "gym", "exercise", "yoga", "muscle", "gains", "abs", "cardio", "bodybuilding", "protein", "fitfam", "legday", "weightloss", "running", "calisthenics"),
-        "food" to listOf("food", "recipe", "recipes", "cooking", "cook", "foodie", "chef", "delicious", "baking", "dinner", "breakfast", "lunch", "restaurant", "streetfood", "biryani", "dosa", "snack", "dessert"),
-        "music" to listOf("music", "song", "songs", "singer", "guitar", "dj", "rap", "lyrics", "cover", "original audio", "beats", "remix", "piano", "love song", "feelingsong", "bgm", "kadhal", "melody", "whatsappstatus"),
-        "news" to listOf("news", "breaking", "politics", "election", "government", "president", "minister", "headline", "war", "update", "bjp", "modi", "parliament"),
-        "travel" to listOf("travel", "trip", "vacation", "wanderlust", "explore", "beach", "tour", "hotel", "roadtrip", "backpacking", "destination", "singapore", "dubai", "ooty", "vlog", "trekking"),
-        "tech" to listOf("tech", "ai", "coding", "programming", "software", "developer", "gadget", "iphone", "android", "startup", "chatgpt", "robot", "engineering", "systems", "career", "cloud", "cybersecurity", "python", "java", "javascript", "data", "institute"),
-        "fashion" to listOf("fashion", "outfit", "ootd", "style", "streetwear", "makeup", "beauty", "model", "dress", "grwm", "skincare", "saree", "hairstyle")
+    // Used when the asset is missing or malformed so nothing crashes.
+    private val BUILT_IN: Map<String, List<String>> = mapOf(
+        "sports" to listOf("cricket", "ipl", "football", "match", "wwe"),
+        "entertainment" to listOf("comedy", "song", "movie", "music", "dance", "meme", "love"),
+        "education" to listOf("tech", "coding", "career", "course", "ai", "learn"),
+        "lifestyle" to listOf("food", "recipe", "travel", "fashion", "fitness", "nature")
     )
 
+    @Volatile private var dataset: Map<String, List<String>> = BUILT_IN
+    @Volatile private var loaded = false
+
+    /** Parses {"categories":{"sports":{"keywords":[...]},...}} into lowercase keyword lists. Throws on bad JSON. */
+    fun parse(json: String): Map<String, List<String>> {
+        val cats = JSONObject(json).getJSONObject("categories")
+        val out = LinkedHashMap<String, List<String>>()
+        for (name in cats.keys()) {
+            val arr = cats.getJSONObject(name).getJSONArray("keywords")
+            out[name.lowercase()] = (0 until arr.length()).map { arr.getString(it).trim().lowercase() }
+                .filter { it.isNotEmpty() }
+        }
+        return out
+    }
+
+    /** Reads the asset once and caches it; keeps the built-in list if it is missing or malformed. */
+    fun load(ctx: Context) {
+        if (loaded) return
+        try {
+            val json = ctx.assets.open(ASSET).bufferedReader().use { it.readText() }
+            val parsed = parse(json)
+            if (parsed.values.any { it.isNotEmpty() }) dataset = parsed
+        } catch (_: Throwable) {
+            // keep BUILT_IN
+        }
+        loaded = true
+    }
+
     /** Returns the best-matching category for the reel's [texts], or [OTHER] when nothing matches. */
-    fun categorize(texts: List<String>): String {
-        val tokens = texts.joinToString(" ").lowercase()
-            .split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+    fun categorize(texts: List<String>): String = categorize(texts, dataset)
+
+    fun categorize(texts: List<String>, words: Map<String, List<String>>): String {
+        // Instagram ad labels mean the reel is an ad, whatever else the text says.
+        if (texts.any { ReelText.isAdLabel(it) }) return OTHER
+        val clean = texts.filterNot { ReelText.isNoise(it) }
+        // Letters, marks (Tamil vowel signs) and digits survive; emoji and punctuation become spaces.
+        val tokens = clean.joinToString(" ").lowercase()
+            .split(Regex("[^\\p{L}\\p{M}\\p{N}]+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty()) return OTHER
         // Space-padded so `" $it "` below matches whole tokens and phrases only.
         val joined = " " + tokens.joinToString(" ") + " "
         var best = OTHER
         var bestScore = 0
-        for ((category, words) in keywords) {
-            // Whole-token match (so "ai" doesn't hit "said"); multi-word keywords match as phrases.
-            val score = words.count { joined.contains(" $it ") }
+        val order = PRIORITY + words.keys.filter { it !in PRIORITY && it != OTHER }
+        for (category in order) {
+            val kws = words[category] ?: continue
+            val score = kws.count {
+                if (isLatin(it)) joined.contains(" $it ")
+                // Drop a trailing virama so the stem also matches inflected forms (காதல் -> காதலில்).
+                else joined.contains(it.trimEnd('\u0BCD', '\u094D'))
+            }
             if (score > bestScore) {
                 best = category
                 bestScore = score
@@ -36,4 +79,7 @@ object Categorizer {
         }
         return best
     }
+
+    // Latin keyword = no letter outside ASCII/Latin script.
+    private fun isLatin(s: String) = s.none { it.isLetter() && Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN }
 }

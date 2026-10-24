@@ -87,9 +87,4 @@ class BubbleOverlay(private val ctx: Context) {
     fun render(s: PressureEngine.Snapshot) {
         view.render(s)
     }
-
-    /** Redraws the per-category tally line only (no count animation restart). */
-    fun invalidateTally() {
-        view.refreshTally()
-    }
 }

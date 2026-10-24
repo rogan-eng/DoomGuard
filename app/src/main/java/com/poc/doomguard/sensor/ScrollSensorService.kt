@@ -12,8 +12,11 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
+import com.poc.doomguard.data.AiConsent
 import com.poc.doomguard.data.Categorizer
-import com.poc.doomguard.data.CategoryTally
+import com.poc.doomguard.data.ReelLog
+import com.poc.doomguard.data.ReelText
+import com.poc.doomguard.data.SessionSummarizer
 import com.poc.doomguard.engine.Checkpoint
 import com.poc.doomguard.engine.PressureEngine
 import com.poc.doomguard.overlay.BubbleOverlay
@@ -37,6 +40,9 @@ class ScrollSensorService : AccessibilityService() {
     // The break activity takes a moment to appear; until it does, treat the break as showing.
     private var breakGraceUntil = 0L
     private val handler = Handler(Looper.getMainLooper())
+    // Bumped when a checkpoint fires; a reel dump scheduled under an older token belongs to the
+    // previous session and is dropped.
+    private var sessionToken = 0
     private val showWhenBreakEnds = object : Runnable {
         override fun run() {
             if (!igForeground || !::bubble.isInitialized) return
@@ -73,6 +79,7 @@ class ScrollSensorService : AccessibilityService() {
         PressureEngine.threshold = getSharedPreferences("doomguard_prefs", Context.MODE_PRIVATE)
             .getInt("threshold", PressureEngine.threshold)
         Log.w(TAG, "threshold=${PressureEngine.threshold} checkpoint at ${PressureEngine.threshold + CHECKPOINT_EXTRA}")
+        Categorizer.load(this)
         bubble = BubbleOverlay(this)
         ContextCompat.registerReceiver(
             this, testReceiver, IntentFilter(ACTION_TEST), ContextCompat.RECEIVER_EXPORTED
@@ -155,6 +162,10 @@ class ScrollSensorService : AccessibilityService() {
         val now = SystemClock.uptimeMillis()
         if (now - lastCheckpointAt < 3000) return
         lastCheckpointAt = now
+        // First thing, before the break appears: snapshot + clear the session's reel log and publish
+        // the keyword summary at once; Gemini (if enabled) refines it off-thread.
+        sessionToken++ // a late reel dump must not leak into the next session's log
+        SessionSummarizer.begin(AiConsent.get(this))
         // The break owns the screen now: take the overlay down before it appears.
         breakGraceUntil = now + 2000
         igForeground = false
@@ -175,14 +186,18 @@ class ScrollSensorService : AccessibilityService() {
     }
 
     // ~600ms after a reel is counted (let the new reel's text settle), read the reel's creator,
-    // audio and caption and categorize them. A newer reel replaces the pending dump (that reel
-    // simply gets no category); a checkpoint cancels it so a late result cannot leak into the
-    // next session's tally.
+    // audio and caption and record them in ReelLog (categorized once, at the break). A newer reel
+    // replaces the pending dump (that reel simply gets no record); a checkpoint cancels it so a
+    // late dump cannot leak into the next session's log.
     private var pendingDump: Runnable? = null
 
     private fun scheduleNodeDump(reel: Int) {
         pendingDump?.let { handler.removeCallbacks(it) }
-        val r = Runnable { pendingDump = null; dumpNodes(reel) }
+        val token = sessionToken
+        val r = Runnable {
+            pendingDump = null
+            if (token == sessionToken) dumpNodes(reel)
+        }
         pendingDump = r
         handler.postDelayed(r, 600)
     }
@@ -196,6 +211,7 @@ class ScrollSensorService : AccessibilityService() {
         var user: String? = null
         var audio: String? = null
         var caption: String? = null
+        var adSeen = false
         try {
             val root = rootInActiveWindow ?: return
             var visited = 0
@@ -214,7 +230,9 @@ class ScrollSensorService : AccessibilityService() {
                 } else if (id == null && !desc.isNullOrBlank()) {
                     if (audio == null && n.className?.toString()?.endsWith("Button") == true && desc.contains(" · ")) {
                         audio = desc
-                    } else if (caption == null && text.isNullOrBlank() && !isChrome(desc)) {
+                    } else if (ReelText.isAdLabel(desc)) {
+                        adSeen = true
+                    } else if (caption == null && text.isNullOrBlank() && !ReelText.isNoise(desc) && !isChrome(desc)) {
                         caption = desc
                     }
                 }
@@ -229,15 +247,11 @@ class ScrollSensorService : AccessibilityService() {
         }
         try {
             Log.w(TAG, "REELTEXT reel#$reel user=$user audio=$audio caption=${caption?.take(120)}")
-            val texts = listOfNotNull(user, audio, caption)
-            val category = Categorizer.categorize(texts)
-            // count resets to 0 after a checkpoint: the first reel of a session starts a fresh tally.
-            if (PressureEngine.snap.value.count <= 1f) CategoryTally.clear()
-            CategoryTally.add(category)
-            Log.w(TAG, "CATEGORY reel#$reel -> $category tally=${CategoryTally.line()}")
-            if (::bubble.isInitialized) bubble.invalidateTally()
+            // A new session starts when the count has just reset (same rule as before).
+            if (PressureEngine.snap.value.count <= 1f) ReelLog.clear()
+            ReelLog.add(ReelLog.Record(user, audio, caption, ad = adSeen))
         } catch (t: Throwable) {
-            Log.e(TAG, "CATEGORY reel#$reel failed", t)
+            Log.e(TAG, "RECORD reel#$reel failed", t)
         }
     }
 

@@ -39,6 +39,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -66,6 +68,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import com.poc.doomguard.data.AiConsent
 import com.poc.doomguard.data.SessionLog
 import com.poc.doomguard.data.Template
 import com.poc.doomguard.data.TemplateStore
@@ -89,6 +92,7 @@ class MainActivity : ComponentActivity() {
     private var accessibilityEnabled by mutableStateOf(false)
     private var recentLog by mutableStateOf<List<SessionLog.Entry>>(emptyList())
     private var template by mutableStateOf(Template.REEL)
+    private var aiConsent by mutableStateOf(false)
 
     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
@@ -129,6 +133,7 @@ class MainActivity : ComponentActivity() {
         accessibilityEnabled = isAccessibilityServiceEnabled()
         recentLog = SessionLog.all().takeLast(3).reversed()
         template = TemplateStore.get(this)
+        aiConsent = AiConsent.get(this)
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
@@ -232,6 +237,37 @@ class MainActivity : ComponentActivity() {
             )
 
             Spacer(Modifier.height(24.dp))
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Smarter reel categories", style = t.headingStyle(22.sp), color = t.ink)
+                    Text(
+                        if (aiConsent) "On: at each break, the creators, songs and captions of that session's reels are sent to Google (Gemini) once to sort them."
+                        else "Off: reels are sorted by a keyword list on your phone. Turn on to send that session's creators, songs and captions to Google (Gemini) once, at each break, for better results.",
+                        style = t.bodyStyle(15.sp),
+                        color = t.inkSoft,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                Switch(
+                    checked = aiConsent,
+                    onCheckedChange = {
+                        aiConsent = it
+                        AiConsent.set(this@MainActivity, it)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = t.bg,
+                        checkedTrackColor = t.accent,
+                        uncheckedThumbColor = t.ink,
+                        uncheckedTrackColor = t.ink.copy(alpha = 0.2f)
+                    )
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
             if (!ready) {
                 Text("Two things to switch on", style = t.headingStyle(22.sp), color = t.ink)
                 Spacer(Modifier.height(8.dp))
@@ -277,7 +313,8 @@ class MainActivity : ComponentActivity() {
             }
 
             Text(
-                "Nothing leaves your phone. DoomGuard only reads scroll events from Instagram.",
+                if (aiConsent) "Only reel text (creator, song, caption) leaves your phone, once at each break, and only because you switched on smarter categories above."
+                else "Nothing leaves your phone. DoomGuard only reads scroll events from Instagram.",
                 style = t.bodyStyle(14.sp),
                 color = t.inkSoft,
                 modifier = Modifier.padding(top = 32.dp)

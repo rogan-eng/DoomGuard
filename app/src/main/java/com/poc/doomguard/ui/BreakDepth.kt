@@ -89,6 +89,19 @@ fun BreakDepth(s: BreakState, onDone: () -> Unit) {
                     color = Foam,
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
+                s.summary?.let { sum ->
+                    Text(
+                        text = sum.line,
+                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.SemiBold),
+                        color = Foam
+                    )
+                    Text(
+                        text = "${sum.totalLabel} · ${sum.sourceLabel}",
+                        style = TextStyle(fontSize = 13.sp),
+                        color = Teal,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+                    )
+                }
                 // Ascent bar: fills as you rise toward the surface.
                 Canvas(Modifier.fillMaxWidth().height(10.dp)) {
                     drawRect(Foam.copy(alpha = 0.2f), Offset.Zero, size)

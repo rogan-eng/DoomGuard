@@ -69,6 +69,22 @@ fun BreakBubble(s: BreakState, onDone: () -> Unit) {
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 40.dp)
             )
+            s.summary?.let { sum ->
+                Text(
+                    text = sum.line,
+                    color = t.ink,
+                    style = t.bodyStyle(16.sp, FontWeight.SemiBold),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 24.dp)
+                )
+                Text(
+                    text = "${sum.totalLabel} · ${sum.sourceLabel}",
+                    color = t.inkSoft,
+                    style = t.bodyStyle(13.sp),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
             if (s.finished) {
                 Text(
                     text = "Your reel count is reset.",
