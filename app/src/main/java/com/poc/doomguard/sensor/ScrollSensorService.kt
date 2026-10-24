@@ -5,10 +5,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
+import com.poc.doomguard.engine.Checkpoint
 import com.poc.doomguard.engine.PressureEngine
 import com.poc.doomguard.overlay.BubbleOverlay
 import com.poc.doomguard.ui.BreatheActivity
@@ -24,6 +27,23 @@ class ScrollSensorService : AccessibilityService() {
     private var reelCount = 0
     private var lastIndex = -1
     private var lastCheckpointAt = -10_000L
+    // The break activity takes a moment to appear; until it does, treat the break as showing.
+    private var breakGraceUntil = 0L
+    private val handler = Handler(Looper.getMainLooper())
+    private val showWhenBreakEnds = object : Runnable {
+        override fun run() {
+            if (!igForeground || !::bubble.isInitialized) return
+            if (breakShowing()) {
+                handler.postDelayed(this, 300)
+            } else {
+                bubble.show()
+                bubble.render(PressureEngine.snap.value)
+            }
+        }
+    }
+
+    private fun breakShowing() =
+        QuoteBreakActivity.visible || SystemClock.uptimeMillis() < breakGraceUntil
 
     private val testReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -59,21 +79,40 @@ class ScrollSensorService : AccessibilityService() {
                 Log.w(TAG, "window pkg=$pkg cls=${e.className} ig=$ig")
                 // Ignore transient windows (keyboard, shade) so they don't flip us out of IG.
                 if (pkg == null || pkg.startsWith("com.android.systemui") ||
-                    pkg.startsWith("com.vivo.systemuiplugin") || pkg.contains("inputmethod")
+                    pkg.startsWith("com.vivo.systemuiplugin") || pkg.contains("inputmethod") ||
+                    pkg == "android" || pkg.startsWith("com.samsung.android.app.cocktailbarservice") ||
+                    pkg.startsWith("com.miui.systemui") || pkg.startsWith("com.oplus.") ||
+                    pkg.startsWith("com.coloros.")
                 ) return
                 // Our own bubble window fires a window event too; without this it hides itself.
                 if (pkg == packageName && e.className?.toString()?.endsWith("Activity") != true) return
                 igForeground = ig
                 if (!ig) lastIndex = -1
                 if (ig) {
-                    bubble.show()
-                    bubble.render(PressureEngine.snap.value) // shows the reset count after a checkpoint
+                    // Back in Instagram while the break is still tearing down: show once it is gone.
+                    handler.removeCallbacks(showWhenBreakEnds)
+                    if (breakShowing()) handler.postDelayed(showWhenBreakEnds, 300)
+                    else {
+                        bubble.show()
+                        bubble.render(PressureEngine.snap.value) // shows the reset count after a checkpoint
+                    }
                 } else {
+                    handler.removeCallbacks(showWhenBreakEnds)
                     bubble.hide()
                 }
             }
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 if (pkg != IG) return
+                // Instagram keeps emitting scroll events behind the break; they must neither
+                // count nor bring the overlay back.
+                if (breakShowing()) return
+                // Self-heal: a transient window from another package may have hidden the bubble
+                // without IG sending a new window event. IG scrolling proves IG is on screen.
+                if (!igForeground && ::bubble.isInitialized) {
+                    igForeground = true
+                    bubble.show()
+                    bubble.render(PressureEngine.snap.value)
+                }
                 // Reel rule (signal A): Reels is a ViewPager whose fromIndex is the current reel.
                 // A swipe fires 2-4 events with the same index, so count index CHANGES, not events.
                 if (e.className?.toString() == "androidx.viewpager.widget.ViewPager" && e.fromIndex >= 0) {
@@ -107,6 +146,12 @@ class ScrollSensorService : AccessibilityService() {
         val now = SystemClock.uptimeMillis()
         if (now - lastCheckpointAt < 3000) return
         lastCheckpointAt = now
+        // The break owns the screen now: take the overlay down before it appears.
+        breakGraceUntil = now + 2000
+        igForeground = false
+        lastIndex = -1
+        handler.removeCallbacks(showWhenBreakEnds)
+        if (::bubble.isInitialized) bubble.hide()
         Log.w(TAG, "CHECKPOINT: count=${PressureEngine.snap.value.count} -> QuoteBreakActivity")
         try {
             startActivity(
@@ -121,6 +166,7 @@ class ScrollSensorService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        handler.removeCallbacks(showWhenBreakEnds)
         try { unregisterReceiver(testReceiver) } catch (_: Throwable) {}
         if (::bubble.isInitialized) bubble.hide()
         super.onDestroy()
@@ -129,7 +175,7 @@ class ScrollSensorService : AccessibilityService() {
     private companion object {
         const val TAG = "DG"
         const val IG = "com.instagram.android"
-        const val CHECKPOINT_EXTRA = 10
+        const val CHECKPOINT_EXTRA = Checkpoint.EXTRA
         const val ACTION_TEST = "com.poc.doomguard.TEST_BREATHE"
     }
 }

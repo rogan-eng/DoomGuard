@@ -2,6 +2,7 @@ package com.poc.doomguard.overlay
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.util.Log
 import android.view.WindowManager
 import com.poc.doomguard.engine.PressureEngine
 
@@ -11,10 +12,15 @@ class BubbleOverlay(private val ctx: Context) {
     private var shown = false
     private var touchable = false
 
+    // Accessibility overlays need no "Display over other apps" grant and OEM overlay
+    // managers (vivo/Xiaomi/Oppo/Huawei) leave them alone; fall back to the app overlay type.
+    private var useA11yType = true
+
     private fun params(touchable: Boolean) = WindowManager.LayoutParams(
         WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.MATCH_PARENT,
-        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        if (useA11yType) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             (if (touchable) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE),
@@ -22,12 +28,18 @@ class BubbleOverlay(private val ctx: Context) {
     )
 
     fun show() {
-        if (shown) return
+        if (shown && view.isAttachedToWindow) return
+        shown = false
+        view.refreshTemplate()
         try {
             wm?.addView(view, params(touchable))
             shown = true
-        } catch (_: Exception) {
-            // Missing overlay permission or window already added; stay hidden.
+        } catch (e: Exception) {
+            Log.w("DG", "overlay addView failed (a11yType=$useA11yType)", e)
+            if (useA11yType) {
+                useA11yType = false
+                show()
+            }
         }
     }
 

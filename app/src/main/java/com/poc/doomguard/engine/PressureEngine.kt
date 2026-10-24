@@ -9,7 +9,8 @@ object PressureEngine {
     data class ResultOfSession(val reels: Int, val durationMs: Long)
 
     @Volatile var threshold: Int = 25
-    @Volatile var span: Int = 15
+    // Pressure reaches 1 exactly when the checkpoint fires, so the overlay is at full size then.
+    @Volatile var span: Int = Checkpoint.EXTRA
 
     /** Injectable time source so tests don't sleep. */
     internal var clock: () -> Long = System::currentTimeMillis
