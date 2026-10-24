@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">DoomGuard</string>
+    <string name="accessibility_description">DoomGuard counts reels in Instagram to help you notice when you\'re doomscrolling. It does not read or send any content.</string>
+</resources>
